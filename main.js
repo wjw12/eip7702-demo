@@ -37,8 +37,13 @@ async function main() {
   console.log(`User wallet address: ${userWallet.address}`);  
   console.log(`Executor wallet address: ${executorWallet.address}`);  
     
+
+  //await downgradeWalletFromEIP7702(userWallet, provider);
+  //return;
+
   // Step 1: Upgrade wallet with EIP-7702 Type-4 transaction  
   // await upgradeWalletWithEIP7702(userWallet, provider);  
+  // return;
     
   // Step 2: Create and sign sessions for different contract interactions  
   console.log('\n--- STEP 2: Creating and Signing Sessions ---');  
@@ -72,115 +77,126 @@ async function main() {
   console.log('\n--- STEP 3: Executing Sessions ---');  
     
   // Execute each session (in a real scenario, only one would be executed)  
-  await executeSession(executorWallet, userWallet, walletCore, [erc20TransferCall], session, provider);  
+  await executeSession(executorWallet, userWallet, [erc20TransferCall], session, provider);  
   // Uncomment to execute other sessions  
   // await executeSession(executorWallet, walletCore, [ethTransferCall], session);  
   // await executeSession(executorWallet, walletCore, [nftTransferCall], session);  
 }  
   
-async function upgradeWalletWithEIP7702(wallet, provider) {  
-  // [Existing implementation remains unchanged]  
-  console.log('\n--- STEP 1: Upgrading wallet with EIP-7702 Type-4 transaction ---');  
-    
-  // Get WalletCore interface  
-  const walletCoreAbi = [  
-    'function initialize() external'  
-  ];  
-  const walletCore = new ethers.Contract(WALLET_CORE_ADDRESS, walletCoreAbi, provider);  
-    
-  // Encode initialize function call  
-  const calldata = walletCore.interface.encodeFunctionData('initialize');  
-    
-  // Get current chain ID and nonce  
-  const chainId = (await provider.getNetwork()).chainId;  
-  const currentNonce = await provider.getTransactionCount(wallet.address);  
-    
-  console.log(`Chain ID: ${chainId}`);  
-  console.log(`Current nonce: ${currentNonce}`);  
-    
-  // Create authorization data  
-  const authorizationData = {  
-    chainId: ethers.toBeHex(chainId),  
-    address: WALLET_CORE_ADDRESS,  
-    nonce: ethers.toBeHex(currentNonce + 1),  
-  };  
-    
-  // Encode authorization data  
-  const encodedAuthorizationData = ethers.concat([  
-    '0x05', // MAGIC code for EIP7702  
-    ethers.encodeRlp([  
-      authorizationData.chainId,  
-      authorizationData.address,  
-      authorizationData.nonce,  
-    ])  
-  ]);  
-    
-  // Sign authorization data  
-  const authorizationDataHash = ethers.keccak256(encodedAuthorizationData);  
-  const authorizationSignature = wallet.signingKey.sign(authorizationDataHash);  
-    
-  // Add signature components to authorization data  
-  authorizationData.yParity = authorizationSignature.yParity === 0 ? '0x' : '0x01';  
-  authorizationData.r = authorizationSignature.r;  
-  authorizationData.s = authorizationSignature.s;  
-    
-  // Get fee data  
-  const feeData = await provider.getFeeData();  
-    
-  // Prepare transaction data  
-  const txData = [  
-    authorizationData.chainId,  
-    currentNonce === 0 ? "0x" : ethers.toBeHex(currentNonce),  
-    ethers.toBeHex(feeData.maxPriorityFeePerGas),  
-    ethers.toBeHex(feeData.maxFeePerGas),  
-    ethers.toBeHex(1000000), // Gas limit  
-    wallet.address, // Sender address  
-    '0x', // No ETH value  
-    calldata, // initialize() function call  
-    [], // Empty access list  
-    [  
-      [  
-        authorizationData.chainId,  
-        authorizationData.address,  
-        authorizationData.nonce,  
-        authorizationData.yParity,  
-        authorizationData.r,  
-        authorizationData.s  
-      ]  
-    ]  
-  ];  
-    
-  // Encode transaction with type prefix  
-  const encodedTxData = ethers.concat([  
-    '0x04', // Transaction type identifier for EIP-7702  
-    ethers.encodeRlp(txData)  
-  ]);  
-    
-  // Sign the transaction  
-  const txDataHash = ethers.keccak256(encodedTxData);  
-  const txSignature = wallet.signingKey.sign(txDataHash);  
-    
-  // Construct the signed transaction  
-  const signedTx = ethers.hexlify(ethers.concat([  
-    '0x04',  
-    ethers.encodeRlp([  
-      ...txData,  
-      txSignature.yParity === 0 ? '0x' : '0x01',  
-      txSignature.r,  
-      txSignature.s  
-    ])  
-  ]));  
-    
-  // Send the transaction  
-  console.log('Sending EIP-7702 Type-4 transaction...');  
-  const tx = await provider.send('eth_sendRawTransaction', [signedTx]);  
-  console.log(`Transaction sent: ${tx}`);  
-    
-  // Wait for transaction to be mined  
-  console.log('Waiting for transaction to be mined...');  
-  await provider.waitForTransaction(tx);  
-  console.log('Wallet upgrade complete!');  
-}  
+async function sendEIP7702Transaction(wallet, provider, options = {}) {
+  const {
+    isUpgrade = true,
+    targetAddress = null,
+    calldata = '0x'
+  } = options;
+  
+  console.log(`${isUpgrade ? 'Upgrading wallet with' : 'Downgrading wallet (undelegating) from'} EIP-7702 ---`);
+  
+  // Get current chain ID and nonce
+  const chainId = (await provider.getNetwork()).chainId;
+  const currentNonce = await provider.getTransactionCount(wallet.address);
+  
+  const authorizationData = {
+    chainId: ethers.toBeHex(chainId),
+    address: isUpgrade ? targetAddress : wallet.address, // For upgrade: target contract, for downgrade: EOA address
+    nonce: ethers.toBeHex(currentNonce + 1),
+  };
+  
+  const encodedAuthorizationData = ethers.concat([
+    '0x05', // MAGIC code for EIP7702
+    ethers.encodeRlp([
+      authorizationData.chainId,
+      authorizationData.address,
+      authorizationData.nonce,
+    ])
+  ]);
+  
+  // Sign authorization data
+  const authorizationDataHash = ethers.keccak256(encodedAuthorizationData);
+  const authorizationSignature = wallet.signingKey.sign(authorizationDataHash);
+  
+  // Add signature components to authorization data
+  authorizationData.yParity = authorizationSignature.yParity === 0 ? '0x' : '0x01';
+  authorizationData.r = authorizationSignature.r;
+  authorizationData.s = authorizationSignature.s;
+  
+  const feeData = await provider.getFeeData();
+  
+  const txData = [
+    authorizationData.chainId,
+    currentNonce === 0 ? "0x" : ethers.toBeHex(currentNonce),
+    ethers.toBeHex(feeData.maxPriorityFeePerGas),
+    ethers.toBeHex(feeData.maxFeePerGas),
+    ethers.toBeHex(1000000), // Gas limit
+    wallet.address, // Sender address
+    '0x', // No ETH value
+    calldata,
+    [], // Empty access list
+    [
+      [
+        authorizationData.chainId,
+        authorizationData.address,
+        authorizationData.nonce,
+        authorizationData.yParity,
+        authorizationData.r,
+        authorizationData.s
+      ]
+    ]
+  ];
+  
+  // Encode transaction with type prefix
+  const encodedTxData = ethers.concat([
+    '0x04', // Transaction type identifier for EIP-7702
+    ethers.encodeRlp(txData)
+  ]);
+  
+  // Sign the transaction
+  const txDataHash = ethers.keccak256(encodedTxData);
+  const txSignature = wallet.signingKey.sign(txDataHash);
+  
+  // Construct the signed transaction
+  const signedTx = ethers.hexlify(ethers.concat([
+    '0x04',
+    ethers.encodeRlp([
+      ...txData,
+      txSignature.yParity === 0 ? '0x' : '0x01',
+      txSignature.r,
+      txSignature.s
+    ])
+  ]));
+  
+  console.log(`Sending EIP-7702 Type-4 ${isUpgrade ? '' : 'undelegation '}transaction...`);
+  const tx = await provider.send('eth_sendRawTransaction', [signedTx]);
+  console.log(`Transaction sent: ${tx}`);
+  
+  console.log('Waiting for transaction to be mined...');
+  await provider.waitForTransaction(tx);
+  console.log(`Wallet ${isUpgrade ? 'upgrade' : 'downgrade (undelegation)'} complete!`);
+  
+  return tx;
+}
+
+async function upgradeWalletWithEIP7702(wallet, provider) {
+  const walletCoreAbi = [
+    'function initialize() external'
+  ];
+  const walletCore = new ethers.Contract(WALLET_CORE_ADDRESS, walletCoreAbi, provider);
+  
+  const calldata = walletCore.interface.encodeFunctionData('initialize');
+  
+  return sendEIP7702Transaction(wallet, provider, {
+    isUpgrade: true,
+    targetAddress: WALLET_CORE_ADDRESS,
+    calldata: calldata
+  });
+}
+
+async function downgradeWalletFromEIP7702(wallet, provider) {
+  return sendEIP7702Transaction(wallet, provider, {
+    isUpgrade: false
+  });
+}
+
   
 // FUNCTION 1: Create and sign a session (user side)  
 async function createAndSignSession(userSmartWallet, executorWallet, provider) {
@@ -279,7 +295,7 @@ async function createAndSignSession(userSmartWallet, executorWallet, provider) {
 }  
   
 // FUNCTION 2: Execute a session (executor side)  
-async function executeSession(executorWallet, userWallet, walletCore, calls, session, provider) {  
+async function executeSession(executorWallet, userWallet, calls, session, provider) {  
   console.log(`Executing session ${session.id} with ${calls.length} calls...`);  
     
   try {
